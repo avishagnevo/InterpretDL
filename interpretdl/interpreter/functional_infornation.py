@@ -1,7 +1,7 @@
 import numpy as np
 
 from tqdm import tqdm
-from .abc_interpreter import InputGradientInterpreter
+from .abc_interpreter_pytorch import InputGradientInterpreter
 from ..data_processor.readers import images_transform_pipeline, preprocess_save_path
 from ..data_processor.visualizer import explanation_to_vis, show_vis_explanation, save_image
 
@@ -21,8 +21,8 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
     (pixels for images, tokens for nlp), by instead generating input-correlations-awared noise (as mentioned before).
 
     Intuitivly, the Functional Information of the input with respect to a specific class, 
-    is high if the model's output layer class specific entry is highly variates for purtubations (adding input-correlations-aware sampled noise) on this input,
-    and is low if the model's output layer class specific entry is almost constant for purtubations on this input.
+    is high if the model's output layer class specific entry highly variates under the purtubations (adding input-correlations-aware sampled noise) for this input,
+    and is low if the model's output layer class specific entry is almost constant for purtubations for this input.
 
     Note, the Functional Information of the input with respect to a specific class, can be vary between diffrent classes.
     """
@@ -196,3 +196,96 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         """
 
         imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)
+
+    import numpy as np
+
+
+
+    def init_corr_mat(self, inputs, labels, specific_classes=None, resize_to=224, crop_to=None, save_path=None, visual=False):
+        """
+        Compute correlation matrices for each class in the dataset.
+        Ensures positive-definiteness by adding a small noise term to the diagonal.
+
+        Args:
+            inputs (str or list): Filepaths or list of images.
+            labels (list or np.ndarray): Class labels corresponding to inputs.
+            specific_classes (list, optional): Specific classes for which correlation matrices should be computed. Default is all classes.
+            resize_to (int, optional): Resize the shorter edge of images to this value. Default is 224.
+            crop_to (int, optional): Crop images to a square of this size after resizing. Default is None.
+            save_path (str, optional): Path to save the computed matrices.
+            visual (bool, optional): Whether to print a part of the correlation matrix for verification.
+
+        Returns:
+            dict: A dictionary containing correlation matrices for each class.
+        """
+
+        # Transform images using the pre-processing pipeline
+        imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)  
+        # data.shape should be (1, 3, 224, 224) -> (batch, channels, height, width)
+
+        assert data.shape[1] == 3, "Expected 3 channels (RGB), but got different shape!"
+        height, width = data.shape[2], data.shape[3]
+        num_pixels = height * width  # 224 * 224 = 50176
+
+        unique_classes = np.unique(labels) if specific_classes is None else specific_classes
+        correlation_matrices = {}
+
+        for class_label in unique_classes:
+            class_indices = np.where(labels == class_label)[0]
+            class_data = data[class_indices]  # Select images of this class
+
+            if class_data.shape[0] < 2:
+                print(f"Skipping class {class_label} due to insufficient samples.")
+                continue
+
+            # Extract only the first channel (assuming RGB, we use Red)
+            class_data = class_data[:, 0, :, :]  # Shape: (num_samples, 224, 224)
+
+            # Reshape to (num_samples, num_pixels)
+            class_data = class_data.reshape(class_data.shape[0], num_pixels)
+
+            # Compute correlation matrix
+            corr_matrix = np.corrcoef(class_data, rowvar=False)  # Shape: (num_pixels, num_pixels)
+
+            # Ensure positive-definiteness
+            epsilon = 1e-5
+            corr_matrix += np.eye(num_pixels) * epsilon
+
+            correlation_matrices[class_label] = corr_matrix
+
+            if visual:
+                print(f"Correlation matrix for class {class_label} (first 5x5 elements):\n", corr_matrix[:5, :5])
+
+        # Save if requested
+        if save_path:
+            np.save(save_path, correlation_matrices)
+            print(f"Correlation matrices saved to {save_path}")
+
+        return correlation_matrices
+
+
+def main():
+    # Simulated dataset with random pixel values and labels
+    np.random.seed(42)
+    num_samples = 10
+    num_classes = 3
+    height, width = 224, 224
+    num_pixels = height * width
+
+    # Simulated image data (after pipeline transformation) (batch, channels, height, width)
+    inputs = np.random.rand(num_samples, 3, height, width).astype(np.float32)  # Simulating RGB image batch
+    labels = np.random.choice(num_classes, num_samples)  # Random labels (0, 1, 2)
+
+    interpreter = FunctionalInformationInterpreter()
+    corr_matrices = interpreter.init_corr_mat(inputs, labels, visual=True)
+
+    # Validate correctness
+    for class_label, matrix in corr_matrices.items():
+        assert matrix.shape == (num_pixels, num_pixels), "Incorrect shape"
+        assert np.allclose(matrix, matrix.T, atol=1e-5), "Matrix is not symmetric"
+        assert np.all(np.linalg.eigvals(matrix) > 0), "Matrix is not positive-definite"
+
+    print("\nAll tests passed!")
+
+if __name__ == "__main__":
+    main()
