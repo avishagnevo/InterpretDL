@@ -89,7 +89,7 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         """
 
         self.init_corr_mat(dataset, labels = dataset_labels , specific_classes = None, resize_to, crop_to, save_path = save_path_corr_mat, visual = False) # calculated only if this class has not been calculated before
-        
+
         imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)
         # print(imgs.shape, data.shape, imgs.dtype, data.dtype)  # (1, 224, 224, 3) (1, 3, 224, 224) uint8 float32
 
@@ -269,7 +269,7 @@ def main():
     np.random.seed(42)
     num_samples = 10
     num_classes = 3
-    height, width = 224, 224
+    height, width = 64, 64
     num_pixels = height * width
 
     # Simulated image data (after pipeline transformation) (batch, channels, height, width)
