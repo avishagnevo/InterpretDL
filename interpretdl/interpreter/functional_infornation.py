@@ -5,6 +5,8 @@ from .abc_interpreter_pytorch import InputGradientInterpreter
 from ..data_processor.readers import images_transform_pipeline, preprocess_save_path
 from ..data_processor.visualizer import explanation_to_vis, show_vis_explanation, save_image
 
+from torchvision.models import resner
+
 
 class FunctionalInformationInterpreter(InputGradientInterpreter):
     """
