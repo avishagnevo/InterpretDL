@@ -1,4 +1,5 @@
 import numpy as np
+import os
 
 from tqdm import tqdm
 from .abc_interpreter_pytorch import InputGradientInterpreter
@@ -89,13 +90,17 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         Returns:
             np.ndarray: the explanation result.
         """
-
-        self.init_corr_mat(dataset, labels = dataset_labels , specific_classes = None, resize_to, crop_to, save_path = save_path_corr_mat, visual = False) # calculated only if this class has not been calculated before
-
-        imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)
-        # print(imgs.shape, data.shape, imgs.dtype, data.dtype)  # (1, 224, 224, 3) (1, 3, 224, 224) uint8 float32
-
         assert len(data) == 1, "interpret each sample individually, it is optimized."
+
+        if os.path.exists(save_path_corr_mat):
+            print(f"Loads the correlation matrix at file path {save_path_corr_mat}")
+            correlation_matrices = np.load(save_path_corr_mat, allow_pickle=True).item()
+        else:
+            print(f"Calculates the correlation matrix for the first time and saves it at {save_path_corr_mat}")
+            correlation_matrices = self.init_corr_mat(dataset, labels = dataset_labels , specific_classes = None, resize_to, crop_to, save_path = save_path_corr_mat, visual = False) # calculated only if this class has not been calculated before
+        
+        imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)
+        print(imgs.shape, data.shape, imgs.dtype, data.dtype)  # (1, 224, 224, 3) (1, 3, 224, 224) uint8 float32
 
         self._build_predict_fn(gradient_of=gradient_of)
 
@@ -107,10 +112,36 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
             labels = predicted_label
 
         labels = np.array(labels).reshape((1, ))
+        
+        corr_mat  = correlation_matrices[labels[0]] # assuming single input, single label
+        covariance_matrix = noise_amount * corr_mat  # Scale noise using correlation strength
 
+        data_noised = []
+        num_pixels = data.shape[2] * data.shape[3]  # Flatten (height * width)
+
+        for i in range(n_samples):
+            # Generate correlated noise (multivariate normal)
+            correlated_noise = np.random.multivariate_normal(
+                mean=np.zeros(num_pixels), 
+                cov=covariance_matrix, 
+                size=1  # Generate one sample per image
+            ).reshape(1, data.shape[2], data.shape[3])  # Reshape to original image shape
+
+            # Expand to match channels
+            correlated_noise = np.repeat(correlated_noise[:, np.newaxis, :, :], 3, axis=1)  # Shape: (1, 3, 224, 224)
+
+            # Apply noise to data
+            noised_sample = data + correlated_noise.astype(np.float32)
+            data_noised.append(noised_sample)
+
+        data_noised = np.concatenate(data_noised, axis=0)
+        print(data_noised.shape)  # (n_samples, 3, 224, 224)
+
+
+        '''
         # SmoothGrad
         max_axis = tuple(np.arange(1, data.ndim))
-        stds = noise_amount * (np.max(data, axis=max_axis) - np.min(data, axis=max_axis))
+        stds = noise_amount * (np.max(data, axis=max_axis) - np.min(data, axis=max_axis)) # this looks like smoothgrad
 
         data_noised = []
         for i in range(n_samples):
@@ -119,6 +150,7 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
             data_noised.append(data + noise)
 
         data_noised = np.concatenate(data_noised, axis=0)
+        '''
         # print(data_i.shape, labels.shape)
         # print(data_noised.shape)  # n_samples, 3, 224, 224
 
@@ -156,14 +188,8 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
 
         return avg_gradients
 
-    def init_corr_mat(self,
-                    inputs, 
-                    labels, 
-                    specific_classes = None, 
-                    resize_to: int = 224,
-                    crop_to: int = None,
-                    save_path = None, 
-                    visual = False): 
+
+    def init_corr_mat(self, inputs, labels, specific_classes=None, resize_to=64, crop_to=None, save_path=None, visual=False):
         """
         The covariance matrix is a crucial component of our proposed explainability method. In order to explain an output class y, 
         the covariance matrix of that class \Sigma need to be estimated empirically.
@@ -183,28 +209,7 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         the correlation matrix will not be a positive-definite matrix. Hence, we suggest adding a small noise to the diagonal of every correlation matrix,
         which is a well-known practice to modify the matrix to be positive-definite.
 
-        Args:
-            inputs (str or list): The datasets image filepath or a list of filepaths or numpy array of read images.
-            labels (list or np.ndarray, optional): The target labels of the inputs. The number of labels should be equal 
-                to the number of images. If None, the labels are infered from the ``inputs`` filepaths names. Default: ``None``.
-            specific_labels (list or np.ndarray, optional): The specific target labels to calculate the corr for.  
-            If None, calculates the corr for all labels. Default: ``None``.    
-            save_path (str, optional): The filepath(s) to save the correlation matrix(s). If None, the correlation matrix will not be 
-                saved. Default: ``None``.
-            visual (bool, optional): Whether or not to visualize a part of the correlation matrix. Default: ``False``.    
-
-        Returns:
-            np.ndarray: the correlation matries
-        """
-
-        imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)
-
-    import numpy as np
-
-
-
-    def init_corr_mat(self, inputs, labels, specific_classes=None, resize_to=224, crop_to=None, save_path=None, visual=False):
-        """
+        With this function:
         Compute correlation matrices for each class in the dataset.
         Ensures positive-definiteness by adding a small noise term to the diagonal.
 
@@ -223,7 +228,7 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
 
         # Transform images using the pre-processing pipeline
         imgs, data = images_transform_pipeline(inputs, resize_to, crop_to)  
-        # data.shape should be (1, 3, 224, 224) -> (batch, channels, height, width)
+        print('Shape of images used for correlation matrcies calculation:', data.shape) # should be (1, 3, 224, 224) -> (batch, channels, height, width)
 
         assert data.shape[1] == 3, "Expected 3 channels (RGB), but got different shape!"
         height, width = data.shape[2], data.shape[3]
@@ -233,6 +238,7 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         correlation_matrices = {}
 
         for class_label in unique_classes:
+            print(f"Calculating correlation matrix for class {class_label}...")
             class_indices = np.where(labels == class_label)[0]
             class_data = data[class_indices]  # Select images of this class
 
@@ -266,28 +272,4 @@ class FunctionalInformationInterpreter(InputGradientInterpreter):
         return correlation_matrices
 
 
-def main():
-    # Simulated dataset with random pixel values and labels
-    np.random.seed(42)
-    num_samples = 10
-    num_classes = 3
-    height, width = 64, 64
-    num_pixels = height * width
 
-    # Simulated image data (after pipeline transformation) (batch, channels, height, width)
-    inputs = np.random.rand(num_samples, 3, height, width).astype(np.float32)  # Simulating RGB image batch
-    labels = np.random.choice(num_classes, num_samples)  # Random labels (0, 1, 2)
-
-    interpreter = FunctionalInformationInterpreter()
-    corr_matrices = interpreter.init_corr_mat(inputs, labels, visual=True)
-
-    # Validate correctness
-    for class_label, matrix in corr_matrices.items():
-        assert matrix.shape == (num_pixels, num_pixels), "Incorrect shape"
-        assert np.allclose(matrix, matrix.T, atol=1e-5), "Matrix is not symmetric"
-        assert np.all(np.linalg.eigvals(matrix) > 0), "Matrix is not positive-definite"
-
-    print("\nAll tests passed!")
-
-if __name__ == "__main__":
-    main()
